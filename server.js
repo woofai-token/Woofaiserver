@@ -1,4 +1,10 @@
-require('dotenv').config(); const express = require('express'); const { Connection, Keypair, Transaction, SystemProgram, PublicKey, sendAndConfirmTransaction } = require('@solana/web3.js'); const { getOrCreateAssociatedTokenAccount, createTransferInstruction, TOKEN_PROGRAM_ID } = require('@solana/spl-token'); const bs58 = require('bs58'); const cors = require('cors'); const rateLimit = require('express-rate-limit');
+require('dotenv').config();
+const express = require('express');
+const { Connection, Keypair, Transaction, SystemProgram, PublicKey } = require('@solana/web3.js');
+const { Token, TOKEN_PROGRAM_ID } = require('@solana/spl-token');
+const bs58 = require('bs58');
+const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
 
