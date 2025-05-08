@@ -79,6 +79,6 @@ res.json({ success: true, transactionId: signature, tokensReceived: tokensToSend
 
 } catch (err) { console.error(err); res.status(500).json({ success: false, error: err.message }); } });
 
-const PORT = process.env.PORT || 3000; app.listen(PORT, () => console.log(Presale server running on port ${PORT}));
-
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Presale server running on port ${PORT}`));
                       
