@@ -1,11 +1,18 @@
 require('dotenv').config();
 const express = require('express');
-const { Connection, PublicKey, Keypair, clusterApiUrl, LAMPORTS_PER_SOL } = require('@solana/web3.js');
-const { getOrCreateAssociatedTokenAccount, transfer } = require('@solana/spl-token');
-const bs58 = require('bs58');
-
-const app = express();
-const port = 3000;
+const {
+  Connection,
+  PublicKey,
+  Keypair,
+  clusterApiUrl,
+  LAMPORTS_PER_SOL
+} = require('@solana/web3.js');
+const {
+  getOrCreateAssociatedTokenAccount,
+  transfer
+} = require('@solana/spl-token');
+const bip39 = require('bip39');
+const ed25519 = require('ed25519-hd-key');
 
 // === ENV VARIABLES ===
 const RECEIVER_ADDRESS = process.env.RECEIVER_ADDRESS;
@@ -13,49 +20,55 @@ const SEED_PHRASE = process.env.SEED_PHRASE;
 const MINT_ADDRESS = process.env.MINT_ADDRESS;
 
 const connection = new Connection(clusterApiUrl('mainnet-beta'), 'confirmed');
-const payer = Keypair.fromSecretKey(bs58.decode(SEED_PHRASE));
 const mint = new PublicKey(MINT_ADDRESS);
 const receiverWallet = new PublicKey(RECEIVER_ADDRESS);
 
-// Track processed transactions to prevent re-sending
-let processedSigs = new Set();
+// Wrap everything in async function
+(async () => {
+  const seed = await bip39.mnemonicToSeed(SEED_PHRASE);
+  const derived = ed25519.derivePath("m/44'/501'/0'/0'", seed.toString('hex'));
+  const payer = Keypair.fromSeed(derived.key);
 
-async function monitorTransactions() {
-  console.log('Monitoring transactions...');
-  setInterval(async () => {
-    const signatures = await connection.getSignaturesForAddress(receiverWallet, { limit: 10 });
-    for (const sigInfo of signatures) {
-      if (processedSigs.has(sigInfo.signature)) continue;
+  const app = express();
+  const port = process.env.PORT || 3000;
+  let processedSigs = new Set();
 
-      const tx = await connection.getTransaction(sigInfo.signature, { commitment: 'confirmed' });
-      if (!tx) continue;
+  async function monitorTransactions() {
+    console.log('Monitoring transactions...');
+    setInterval(async () => {
+      const signatures = await connection.getSignaturesForAddress(receiverWallet, { limit: 10 });
+      for (const sigInfo of signatures) {
+        if (processedSigs.has(sigInfo.signature)) continue;
 
-      const instructions = tx.transaction.message.instructions;
-      for (const ix of instructions) {
-        if (ix.programId.toBase58() === '11111111111111111111111111111111') {
-          const lamports = tx.meta.postBalances[1] - tx.meta.preBalances[1];
-          const solAmount = lamports / LAMPORTS_PER_SOL;
-          const fromAddress = tx.transaction.message.accountKeys[0].toBase58();
+        const tx = await connection.getTransaction(sigInfo.signature, { commitment: 'confirmed' });
+        if (!tx) continue;
 
-          // Send WoFAI
-          const to = new PublicKey(fromAddress);
-          const toTokenAccount = await getOrCreateAssociatedTokenAccount(connection, payer, mint, to);
-          const amountToSend = solAmount * 1_000_000;
+        const lamports = tx.meta.postBalances[1] - tx.meta.preBalances[1];
+        const solAmount = lamports / LAMPORTS_PER_SOL;
+        const fromAddress = tx.transaction.message.accountKeys[0].toBase58();
 
-          await transfer(connection, payer, await getOrCreateAssociatedTokenAccount(connection, payer, mint, payer.publicKey),
-            toTokenAccount.address, payer.publicKey, amountToSend);
+        const to = new PublicKey(fromAddress);
+        const toTokenAccount = await getOrCreateAssociatedTokenAccount(connection, payer, mint, to);
+        const amountToSend = solAmount * 1_000_000;
 
-          console.log(`Sent ${amountToSend} WoFAI to ${fromAddress} for ${solAmount} SOL`);
-        }
+        await transfer(
+          connection,
+          payer,
+          await getOrCreateAssociatedTokenAccount(connection, payer, mint, payer.publicKey),
+          toTokenAccount.address,
+          payer.publicKey,
+          amountToSend
+        );
+
+        console.log(`Sent ${amountToSend} WoFAI to ${fromAddress} for ${solAmount} SOL`);
+        processedSigs.add(sigInfo.signature);
       }
+    }, 5000);
+  }
 
-      processedSigs.add(sigInfo.signature);
-    }
-  }, 5000);
-}
-
-app.get('/', (req, res) => res.send('WoFAI Presale Server Running'));
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
-  monitorTransactions();
-});
+  app.get('/', (req, res) => res.send('WoFAI Presale Server Running'));
+  app.listen(port, () => {
+    console.log(`Server running on port ${port}`);
+    monitorTransactions();
+  });
+})();
