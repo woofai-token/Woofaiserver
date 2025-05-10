@@ -1,74 +1,95 @@
 require('dotenv').config();
 const express = require('express');
+const { Connection, PublicKey, clusterApiUrl, Keypair, Transaction } = require('@solana/web3.js');
 const {
-  Connection,
-  PublicKey,
-  Keypair,
-  clusterApiUrl,
-  LAMPORTS_PER_SOL
-} = require('@solana/web3.js');
-const {
-  getOrCreateAssociatedTokenAccount,
-  transfer
+  getAssociatedTokenAddress,
+  createAssociatedTokenAccountInstruction,
+  createTransferInstruction,
+  getMint,
 } = require('@solana/spl-token');
-const bip39 = require('bip39');
-const ed25519 = require('ed25519-hd-key');
+const bs58 = require('bs58');
+const { mnemonicToSeedSync } = require('bip39');
+const { derivePath } = require('ed25519-hd-key');
 
-// === ENV VARIABLES ===
-const RECEIVER_ADDRESS = process.env.RECEIVER_ADDRESS;
-const SEED_PHRASE = process.env.SEED_PHRASE;
-const MINT_ADDRESS = process.env.MINT_ADDRESS;
+const app = express();
+app.use(express.json());
 
 const connection = new Connection(clusterApiUrl('mainnet-beta'), 'confirmed');
-const mint = new PublicKey(MINT_ADDRESS);
-const receiverWallet = new PublicKey(RECEIVER_ADDRESS);
 
-// Wrap everything in async function
-(async () => {
-  const seed = await bip39.mnemonicToSeed(SEED_PHRASE);
-  const derived = ed25519.derivePath("m/44'/501'/0'/0'", seed.toString('hex'));
-  const payer = Keypair.fromSeed(derived.key);
+// ENV VARIABLES
+const RECEIVER_ADDRESS = process.env.RECEIVER_ADDRESS;
+const TOKEN_MINT = process.env.TOKEN_MINT;
+const SEED_PHRASE = process.env.SEED_PHRASE;
 
-  const app = express();
-  const port = process.env.PORT || 3000;
-  let processedSigs = new Set();
+const deriveKeypairFromSeed = () => {
+  const seed = mnemonicToSeedSync(SEED_PHRASE, ''); // No password
+  const derivedSeed = derivePath("m/44'/501'/0'/0'", seed.toString('hex')).key;
+  return Keypair.fromSeed(derivedSeed);
+};
 
-  async function monitorTransactions() {
-    console.log('Monitoring transactions...');
-    setInterval(async () => {
-      const signatures = await connection.getSignaturesForAddress(receiverWallet, { limit: 10 });
-      for (const sigInfo of signatures) {
-        if (processedSigs.has(sigInfo.signature)) continue;
+const WofaiPerSol = 1_000_000;
 
-        const tx = await connection.getTransaction(sigInfo.signature, { commitment: 'confirmed' });
-        if (!tx) continue;
+async function getOrCreateAssociatedAccount(userPublicKey, mint, payerPublicKey) {
+  const associatedTokenAddress = await getAssociatedTokenAddress(mint, userPublicKey);
+  const accountInfo = await connection.getAccountInfo(associatedTokenAddress);
 
-        const lamports = tx.meta.postBalances[1] - tx.meta.preBalances[1];
-        const solAmount = lamports / LAMPORTS_PER_SOL;
-        const fromAddress = tx.transaction.message.accountKeys[0].toBase58();
-
-        const to = new PublicKey(fromAddress);
-        const toTokenAccount = await getOrCreateAssociatedTokenAccount(connection, payer, mint, to);
-        const amountToSend = solAmount * 1_000_000;
-
-        await transfer(
-          connection,
-          payer,
-          await getOrCreateAssociatedTokenAccount(connection, payer, mint, payer.publicKey),
-          toTokenAccount.address,
-          payer.publicKey,
-          amountToSend
-        );
-
-        console.log(`Sent ${amountToSend} WoFAI to ${fromAddress} for ${solAmount} SOL`);
-        processedSigs.add(sigInfo.signature);
-      }
-    }, 5000);
+  const instructions = [];
+  if (!accountInfo) {
+    instructions.push(
+      createAssociatedTokenAccountInstruction(
+        payerPublicKey,
+        associatedTokenAddress,
+        userPublicKey,
+        mint
+      )
+    );
   }
 
-  app.get('/', (req, res) => res.send('WoFAI Presale Server Running'));
-  app.listen(port, () => {
-    console.log(`Server running on port ${port}`);
-    monitorTransactions();
-  });
-})();
+  return { associatedTokenAddress, instructions };
+}
+
+app.post('/handle-payment', async (req, res) => {
+  try {
+    const { sender, amount } = req.body;
+    const userPublicKey = new PublicKey(sender);
+    const amountSol = parseFloat(amount);
+    const tokenAmount = amountSol * WofaiPerSol;
+
+    const mint = new PublicKey(TOKEN_MINT);
+    const receiverKeypair = deriveKeypairFromSeed();
+
+    const { associatedTokenAddress, instructions } = await getOrCreateAssociatedAccount(
+      userPublicKey,
+      mint,
+      receiverKeypair.publicKey
+    );
+
+    const senderTokenAccount = await getAssociatedTokenAddress(
+      mint,
+      receiverKeypair.publicKey
+    );
+
+    const transferInstruction = createTransferInstruction(
+      senderTokenAccount,
+      associatedTokenAddress,
+      receiverKeypair.publicKey,
+      tokenAmount
+    );
+
+    const transaction = new Transaction().add(...instructions, transferInstruction);
+    transaction.feePayer = receiverKeypair.publicKey;
+    transaction.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+
+    const signature = await connection.sendTransaction(transaction, [receiverKeypair]);
+    await connection.confirmTransaction(signature, 'confirmed');
+
+    res.json({ success: true, tx: signature });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.listen(3000, () => {
+  console.log('Server running on port 3000');
+});
