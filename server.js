@@ -15,10 +15,10 @@ const PORT = 3000;
 const connection = new Connection(clusterApiUrl('devnet'), 'confirmed');
 
 // Replace with your Devnet WFAI token mint address
-const TOKEN_MINT = new PublicKey('YOUR_TOKEN_MINT');
+const TOKEN_MINT = new PublicKey('3ygaDrWchsifigCw64gbVfRQv4RtQcnHCNbrKwJFNFTk');
 
 // Replace with your presale wallet public + secret key
-const PRESALE_WALLET_PUBLIC = new PublicKey('YOUR_PRESALE_WALLET_PUBLIC');
+const PRESALE_WALLET_PUBLIC = new PublicKey('GWkwfF8BbA591V4ZFTLDJJ9eRy5Mhp2Z9zNBNFvf6cgy');
 const PRESALE_WALLET_SECRET = bs58.decode('YOUR_PRESALE_WALLET_SECRET_BASE58'); // Or use JSON keypair
 const presaleWallet = Keypair.fromSecretKey(PRESALE_WALLET_SECRET);
 
