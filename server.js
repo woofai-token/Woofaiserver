@@ -1,95 +1,79 @@
-require('dotenv').config();
 const express = require('express');
-const { Connection, PublicKey, clusterApiUrl, Keypair, Transaction } = require('@solana/web3.js');
-const {
-  getAssociatedTokenAddress,
-  createAssociatedTokenAccountInstruction,
-  createTransferInstruction,
-  getMint,
-} = require('@solana/spl-token');
+const bodyParser = require('body-parser');
+const cors = require('cors');
+const { Connection, PublicKey, Keypair, clusterApiUrl } = require('@solana/web3.js');
+const { getOrCreateAssociatedTokenAccount, transfer, TOKEN_PROGRAM_ID } = require('@solana/spl-token');
 const bs58 = require('bs58');
-const { mnemonicToSeedSync } = require('bip39');
-const { derivePath } = require('ed25519-hd-key');
 
 const app = express();
-app.use(express.json());
+app.use(cors());
+app.use(bodyParser.json());
 
-const connection = new Connection(clusterApiUrl('mainnet-beta'), 'confirmed');
+const PORT = 3000;
 
-// ENV VARIABLES
-const RECEIVER_ADDRESS = process.env.RECEIVER_ADDRESS;
-const TOKEN_MINT = process.env.TOKEN_MINT;
-const SEED_PHRASE = process.env.SEED_PHRASE;
+// ========== CONFIG ==========
+const connection = new Connection(clusterApiUrl('devnet'), 'confirmed');
 
-const deriveKeypairFromSeed = () => {
-  const seed = mnemonicToSeedSync(SEED_PHRASE, ''); // No password
-  const derivedSeed = derivePath("m/44'/501'/0'/0'", seed.toString('hex')).key;
-  return Keypair.fromSeed(derivedSeed);
-};
+// Replace with your Devnet WFAI token mint address
+const TOKEN_MINT = new PublicKey('YOUR_TOKEN_MINT');
 
-const WofaiPerSol = 1_000_000;
+// Replace with your presale wallet public + secret key
+const PRESALE_WALLET_PUBLIC = new PublicKey('YOUR_PRESALE_WALLET_PUBLIC');
+const PRESALE_WALLET_SECRET = bs58.decode('YOUR_PRESALE_WALLET_SECRET_BASE58'); // Or use JSON keypair
+const presaleWallet = Keypair.fromSecretKey(PRESALE_WALLET_SECRET);
 
-async function getOrCreateAssociatedAccount(userPublicKey, mint, payerPublicKey) {
-  const associatedTokenAddress = await getAssociatedTokenAddress(mint, userPublicKey);
-  const accountInfo = await connection.getAccountInfo(associatedTokenAddress);
+const TOKEN_DECIMALS = 9; // Usually 9 for SPL tokens
+const TOKENS_PER_SOL = 1000000;
+// ============================
 
-  const instructions = [];
-  if (!accountInfo) {
-    instructions.push(
-      createAssociatedTokenAccountInstruction(
-        payerPublicKey,
-        associatedTokenAddress,
-        userPublicKey,
-        mint
-      )
-    );
-  }
+app.post('/verify', async (req, res) => {
+  const { signature, buyer, amount } = req.body;
 
-  return { associatedTokenAddress, instructions };
-}
-
-app.post('/handle-payment', async (req, res) => {
   try {
-    const { sender, amount } = req.body;
-    const userPublicKey = new PublicKey(sender);
-    const amountSol = parseFloat(amount);
-    const tokenAmount = amountSol * WofaiPerSol;
+    const tx = await connection.getParsedTransaction(signature, 'confirmed');
+    if (!tx) return res.status(400).json({ message: 'Transaction not found' });
 
-    const mint = new PublicKey(TOKEN_MINT);
-    const receiverKeypair = deriveKeypairFromSeed();
+    const recipientMatch = tx.transaction.message.accountKeys.some(
+      acc => acc.pubkey.toString() === PRESALE_WALLET_PUBLIC.toString()
+    );
+    if (!recipientMatch) return res.status(400).json({ message: 'Invalid recipient' });
 
-    const { associatedTokenAddress, instructions } = await getOrCreateAssociatedAccount(
-      userPublicKey,
-      mint,
-      receiverKeypair.publicKey
+    // Send WFAI tokens
+    const buyerPubKey = new PublicKey(buyer);
+    const tokenAmount = BigInt(amount * TOKENS_PER_SOL * 10 ** TOKEN_DECIMALS);
+
+    const fromTokenAccount = await getOrCreateAssociatedTokenAccount(
+      connection,
+      presaleWallet,
+      TOKEN_MINT,
+      presaleWallet.publicKey
     );
 
-    const senderTokenAccount = await getAssociatedTokenAddress(
-      mint,
-      receiverKeypair.publicKey
+    const toTokenAccount = await getOrCreateAssociatedTokenAccount(
+      connection,
+      presaleWallet,
+      TOKEN_MINT,
+      buyerPubKey
     );
 
-    const transferInstruction = createTransferInstruction(
-      senderTokenAccount,
-      associatedTokenAddress,
-      receiverKeypair.publicKey,
+    const txSig = await transfer(
+      connection,
+      presaleWallet,
+      fromTokenAccount.address,
+      toTokenAccount.address,
+      presaleWallet.publicKey,
       tokenAmount
     );
 
-    const transaction = new Transaction().add(...instructions, transferInstruction);
-    transaction.feePayer = receiverKeypair.publicKey;
-    transaction.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-
-    const signature = await connection.sendTransaction(transaction, [receiverKeypair]);
-    await connection.confirmTransaction(signature, 'confirmed');
-
-    res.json({ success: true, tx: signature });
+    return res.status(200).json({
+      message: 'Success',
+      tokenTx: txSig,
+      tokensSent: amount * TOKENS_PER_SOL
+    });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ message: 'Token transfer failed', error: err.message });
   }
 });
 
-app.listen(3000, () => {
-  console.log('Server running on port 3000');
-});
+app.listen(PORT, () => console.log(`Backend running at http://localhost:${PORT}`));
