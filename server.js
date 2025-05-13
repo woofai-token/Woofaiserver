@@ -1,79 +1,63 @@
-const express = require('express');
-const bodyParser = require('body-parser');
-const cors = require('cors');
-const { Connection, PublicKey, Keypair, clusterApiUrl } = require('@solana/web3.js');
-const { getOrCreateAssociatedTokenAccount, transfer, TOKEN_PROGRAM_ID } = require('@solana/spl-token');
-const bs58 = require('bs58');
+// server.js (ES module version)
+import express from 'express';
+import cors from 'cors';
+import bodyParser from 'body-parser';
+import bs58 from 'bs58';
+import { Connection, PublicKey, Keypair, sendAndConfirmTransaction } from '@solana/web3.js';
+import { getOrCreateAssociatedTokenAccount, transfer } from '@solana/spl-token';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const app = express();
+const PORT = process.env.PORT || 3000;
+
 app.use(cors());
 app.use(bodyParser.json());
 
-const PORT = 3000;
+const connection = new Connection('https://api.devnet.solana.com', 'confirmed');
 
-// ========== CONFIG ==========
-const connection = new Connection(clusterApiUrl('devnet'), 'confirmed');
-
-// Replace with your Devnet WFAI token mint address
-const TOKEN_MINT = new PublicKey('3ygaDrWchsifigCw64gbVfRQv4RtQcnHCNbrKwJFNFTk');
-
-// Replace with your presale wallet public + secret key
-const PRESALE_WALLET_PUBLIC = new PublicKey('GWkwfF8BbA591V4ZFTLDJJ9eRy5Mhp2Z9zNBNFvf6cgy');
-const PRESALE_WALLET_SECRET = bs58.decode('YOUR_PRESALE_WALLET_SECRET_BASE58'); // Or use JSON keypair
-const presaleWallet = Keypair.fromSecretKey(PRESALE_WALLET_SECRET);
-
-const TOKEN_DECIMALS = 9; // Usually 9 for SPL tokens
-const TOKENS_PER_SOL = 1000000;
-// ============================
+// Replace with your actual base58 secret key (DO NOT expose in production)
+const SECRET_KEY_B58 = process.env.SECRET_KEY_B58;
+const secret = bs58.decode(SECRET_KEY_B58);
+const presaleAuthority = Keypair.fromSecretKey(secret);
+const TOKEN_MINT = new PublicKey('3ygaDrWchsifigCw64gbVfRQv4RtQcnHCNbrKwJFNFTk'); // replace with WFAI devnet mint
 
 app.post('/verify', async (req, res) => {
   const { signature, buyer, amount } = req.body;
-
   try {
-    const tx = await connection.getParsedTransaction(signature, 'confirmed');
-    if (!tx) return res.status(400).json({ message: 'Transaction not found' });
+    const confirmation = await connection.getConfirmedTransaction(signature);
+    if (!confirmation) return res.status(400).json({ message: 'Transaction not confirmed.' });
 
-    const recipientMatch = tx.transaction.message.accountKeys.some(
-      acc => acc.pubkey.toString() === PRESALE_WALLET_PUBLIC.toString()
-    );
-    if (!recipientMatch) return res.status(400).json({ message: 'Invalid recipient' });
-
-    // Send WFAI tokens
-    const buyerPubKey = new PublicKey(buyer);
-    const tokenAmount = BigInt(amount * TOKENS_PER_SOL * 10 ** TOKEN_DECIMALS);
-
-    const fromTokenAccount = await getOrCreateAssociatedTokenAccount(
+    const buyerPubkey = new PublicKey(buyer);
+    const tokenAccount = await getOrCreateAssociatedTokenAccount(
       connection,
-      presaleWallet,
+      presaleAuthority,
       TOKEN_MINT,
-      presaleWallet.publicKey
+      buyerPubkey
     );
 
-    const toTokenAccount = await getOrCreateAssociatedTokenAccount(
+    const tokensToSend = amount * 100000; // 1000 WFAI per 1 SOL
+
+    const tx = await transfer(
       connection,
-      presaleWallet,
-      TOKEN_MINT,
-      buyerPubKey
+      presaleAuthority,
+      await getOrCreateAssociatedTokenAccount(
+        connection,
+        presaleAuthority,
+        TOKEN_MINT,
+        presaleAuthority.publicKey
+      ).then(acc => acc.address),
+      tokenAccount.address,
+      presaleAuthority,
+      tokensToSend * 1e6 // if 6 decimals
     );
 
-    const txSig = await transfer(
-      connection,
-      presaleWallet,
-      fromTokenAccount.address,
-      toTokenAccount.address,
-      presaleWallet.publicKey,
-      tokenAmount
-    );
-
-    return res.status(200).json({
-      message: 'Success',
-      tokenTx: txSig,
-      tokensSent: amount * TOKENS_PER_SOL
-    });
+    res.json({ success: true, tokensSent: tokensToSend, tokenTx: tx });
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ message: 'Token transfer failed', error: err.message });
+    res.status(500).json({ message: 'Error verifying or sending tokens.' });
   }
 });
 
-app.listen(PORT, () => console.log(`Backend running at http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
