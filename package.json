@@ -1,18 +1,17 @@
 {
-  "name": "woofai-presale-server",
+  "name": "wfai-backend",
   "version": "1.0.0",
-  "description": "Automated WoFAI token presale backend",
   "main": "server.js",
+  "type": "module",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "@solana/spl-token": "^0.3.11",
-    "@solana/web3.js": "^1.91.3",
-    "bs58": "^5.0.0",
-    "dotenv": "^16.3.1",
-    "express": "^4.18.4",
-    "bip39": "^3.0.4",
-    "ed25519-hd-key": "^1.0.1"
+    "@solana/web3.js": "^1.89.0",
+    "@solana/spl-token": "^0.3.10",
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "body-parser": "^1.20.2",
+    "bs58": "^5.0.0"
   }
 }
