@@ -61,7 +61,7 @@ app.post('/verify', async (req, res) => {
       buyerPubkey
     );
 
-    const tokensToSend = amount * 1000000; // 1000 WFAI per 1 SOL
+    const tokensToSend = amount * 1_000_000; // 1000 WFAI per 1 SOL
 
     // Get presaleAuthority's associated token account
     const senderTokenAccount = (
@@ -80,7 +80,7 @@ app.post('/verify', async (req, res) => {
       senderTokenAccount,
       tokenAccount.address,
       presaleAuthority,
-      tokensToSend * 1e6 // 6 decimal places
+      tokensToSend * 1e9 // 6 decimal places
     );
 
     res.json({
