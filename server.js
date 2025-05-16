@@ -21,7 +21,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(bodyParser.json());
 
-const connection = new Connection('https://api.devnet.solana.com', 'confirmed');
+const connection = new Connection('https://api.mainnet-beta.solana.com', 'confirmed');
 
 // 🔐 Read secret key as JSON array from environment
 const SECRET_KEY_ARRAY = process.env.SECRET_KEY_ARRAY;
@@ -39,7 +39,7 @@ try {
 const presaleAuthority = Keypair.fromSecretKey(secretKey);
 
 // Replace with your Devnet WFAI token mint address
-const TOKEN_MINT = new PublicKey('3ygaDrWchsifigCw64gbVfRQv4RtQcnHCNbrKwJFNFTk');
+const TOKEN_MINT = new PublicKey('GhX61gZrBwmGQfQWyL7jvjANnLN6smHcYDZxYrA5yfcn');
 
 // ========== POST /verify ========== //
 app.post('/verify', async (req, res) => {
