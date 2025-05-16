@@ -21,7 +21,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(bodyParser.json());
 
-const connection = new Connection('https://api.mainnet-beta.solana.com', 'confirmed');
+const connection = new Connection('https://mainnet.helius-rpc.com/?api-key=fabdaf9f-b1de-4a1b-bb03-58532838cea3', 'confirmed');
 
 // 🔐 Read secret key as JSON array from environment
 const SECRET_KEY_ARRAY = process.env.SECRET_KEY_ARRAY;
@@ -52,46 +52,62 @@ app.post('/verify', async (req, res) => {
     }
 
     const buyerPubkey = new PublicKey(buyer);
+    const tokensToSend = amount * 1_000_000;
+    const tokenAmount = BigInt(tokensToSend) * 10n ** 6n; // 6 decimal precision
 
-    const tokensToSend = amount * 1_000_000; // 1 SOL = 1,000,000 WFAI
-    const tokenAmount = BigInt(tokensToSend) * 10n ** 6n; // Adjust to 6 decimals
+    // ✅ Create receiver's ATA (Buyer's)
+    let buyerTokenAccount;
+    try {
+      buyerTokenAccount = await getOrCreateAssociatedTokenAccount(
+        connection,
+        presaleAuthority, // Payer of fees
+        TOKEN_MINT,
+        buyerPubkey,
+        true // allow owner off curve (especially important for PDA or weird wallets)
+      );
+      console.log("✅ Buyer ATA:", buyerTokenAccount.address.toBase58());
+    } catch (err) {
+      console.error("❌ Error creating buyer ATA:", err);
+      throw new Error("Failed to create buyer token account");
+    }
 
-    // 🔹 Get or create the buyer's associated token account
-    const buyerTokenAccount = await getOrCreateAssociatedTokenAccount(
-      connection,
-      presaleAuthority,        // Fee payer
-      TOKEN_MINT,              // Token mint
-      buyerPubkey              // Wallet to receive tokens
-    );
-
-    // 🔹 Get or create presale authority's token account
-    const senderTokenAccount = await getOrCreateAssociatedTokenAccount(
-      connection,
-      presaleAuthority,              // Fee payer
-      TOKEN_MINT,                    // Token mint
-      presaleAuthority.publicKey     // Owner
-    );
+    // ✅ Create sender's ATA (Presale Authority's)
+    let senderTokenAccount;
+    try {
+      senderTokenAccount = await getOrCreateAssociatedTokenAccount(
+        connection,
+        presaleAuthority, // Payer
+        TOKEN_MINT,
+        presaleAuthority.publicKey,
+        true
+      );
+      console.log("✅ Sender ATA:", senderTokenAccount.address.toBase58());
+    } catch (err) {
+      console.error("❌ Error creating sender ATA:", err);
+      throw new Error("Failed to create sender token account");
+    }
 
     // 🔁 Transfer tokens
-    const tx = await transfer(
+    const txSig = await transfer(
       connection,
-      presaleAuthority,                   // Payer
-      senderTokenAccount.address,         // Source
-      buyerTokenAccount.address,          // Destination
-      presaleAuthority.publicKey,         // Owner of source
-      tokenAmount                         // Amount in base units
+      presaleAuthority,
+      senderTokenAccount.address,
+      buyerTokenAccount.address,
+      presaleAuthority.publicKey,
+      tokenAmount
     );
 
     res.json({
       success: true,
       tokensSent: tokensToSend,
-      tokenTx: tx
+      tokenTx: txSig
     });
 
   } catch (err) {
-    console.error('Token send error:', err);
+    console.error('❌ Token send error:', err);
     res.status(500).json({ message: 'Error verifying or sending tokens.', error: err.message });
   }
 });
+
 
 app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
