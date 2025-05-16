@@ -53,34 +53,33 @@ app.post('/verify', async (req, res) => {
 
     const buyerPubkey = new PublicKey(buyer);
 
-    // Get or create the buyer's associated token account
-    const tokenAccount = await getOrCreateAssociatedTokenAccount(
+    const tokensToSend = amount * 1_000_000; // 1 SOL = 1,000,000 WFAI
+    const tokenAmount = BigInt(tokensToSend) * 10n ** 6n; // Adjust to 6 decimals
+
+    // 🔹 Get or create the buyer's associated token account
+    const buyerTokenAccount = await getOrCreateAssociatedTokenAccount(
       connection,
-      presaleAuthority,
-      TOKEN_MINT,
-      buyerPubkey
+      presaleAuthority,        // Fee payer
+      TOKEN_MINT,              // Token mint
+      buyerPubkey              // Wallet to receive tokens
     );
 
-    const tokensToSend = amount * 1_000_000; // 1000 WFAI per 1 SOL
+    // 🔹 Get or create presale authority's token account
+    const senderTokenAccount = await getOrCreateAssociatedTokenAccount(
+      connection,
+      presaleAuthority,              // Fee payer
+      TOKEN_MINT,                    // Token mint
+      presaleAuthority.publicKey     // Owner
+    );
 
-    // Get presaleAuthority's associated token account
-    const senderTokenAccount = (
-      await getOrCreateAssociatedTokenAccount(
-        connection,
-        presaleAuthority,
-        TOKEN_MINT,
-        presaleAuthority.publicKey
-      )
-    ).address;
-
-    // Transfer tokens
+    // 🔁 Transfer tokens
     const tx = await transfer(
       connection,
-      presaleAuthority,
-      senderTokenAccount,
-      tokenAccount.address,
-      presaleAuthority,
-      tokensToSend * 1e9 // 6 decimal places
+      presaleAuthority,                   // Payer
+      senderTokenAccount.address,         // Source
+      buyerTokenAccount.address,          // Destination
+      presaleAuthority.publicKey,         // Owner of source
+      tokenAmount                         // Amount in base units
     );
 
     res.json({
@@ -88,9 +87,10 @@ app.post('/verify', async (req, res) => {
       tokensSent: tokensToSend,
       tokenTx: tx
     });
+
   } catch (err) {
     console.error('Token send error:', err);
-    res.status(500).json({ message: 'Error verifying or sending tokens.' });
+    res.status(500).json({ message: 'Error verifying or sending tokens.', error: err.message });
   }
 });
 
