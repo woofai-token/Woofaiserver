@@ -6,10 +6,14 @@ import dotenv from 'dotenv';
 import {
   Connection,
   PublicKey,
-  Keypair
+  Keypair,
+  Transaction,
+  sendAndConfirmTransaction
 } from '@solana/web3.js';
 import {
-  getOrCreateAssociatedTokenAccount,
+  getAssociatedTokenAddress,
+  createAssociatedTokenAccountInstruction,
+  getAccount,
   transfer
 } from '@solana/spl-token';
 
@@ -21,93 +25,88 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(bodyParser.json());
 
-const connection = new Connection('https://mainnet.helius-rpc.com/?api-key=fabdaf9f-b1de-4a1b-bb03-58532838cea3', 'confirmed');
+const connection = new Connection('https://api.mainnet-beta.solana.com', 'confirmed');
 
-// 🔐 Read secret key as JSON array from environment
+// 🔐 Load secret key
 const SECRET_KEY_ARRAY = process.env.SECRET_KEY_ARRAY;
 if (!SECRET_KEY_ARRAY) {
-  throw new Error("SECRET_KEY_ARRAY not set in environment");
+  throw new Error("❌ SECRET_KEY_ARRAY not set in environment");
 }
-
 let secretKey;
 try {
   secretKey = Uint8Array.from(JSON.parse(SECRET_KEY_ARRAY));
 } catch (e) {
-  throw new Error("Invalid SECRET_KEY_ARRAY format — must be a valid JSON array string.");
+  throw new Error("❌ Invalid SECRET_KEY_ARRAY format — must be a JSON array");
 }
-
 const presaleAuthority = Keypair.fromSecretKey(secretKey);
 
-// Replace with your Devnet WFAI token mint address
+// 🎯 Your token mint address (Mainnet)
 const TOKEN_MINT = new PublicKey('GhX61gZrBwmGQfQWyL7jvjANnLN6smHcYDZxYrA5yfcn');
 
-// ========== POST /verify ========== //
+// 🔧 Safe ATA creation utility
+async function safelyGetOrCreateATA(payer, mint, owner) {
+  const ata = await getAssociatedTokenAddress(mint, owner, true); // allow off-curve
+  try {
+    await getAccount(connection, ata);
+    console.log(`✅ ATA exists: ${ata.toBase58()}`);
+  } catch (e) {
+    if (e.name === 'TokenAccountNotFoundError') {
+      console.log(`⚠️ ATA missing, creating for ${owner.toBase58()}`);
+      const ix = createAssociatedTokenAccountInstruction(
+        payer.publicKey,
+        ata,
+        owner,
+        mint
+      );
+      const tx = new Transaction().add(ix);
+      await sendAndConfirmTransaction(connection, tx, [payer]);
+      console.log(`✅ ATA created: ${ata.toBase58()}`);
+    } else {
+      console.error("❌ ATA check/create failed:", e);
+      throw new Error("Failed to create buyer token account");
+    }
+  }
+  return ata;
+}
+
+// 🚀 POST /verify
 app.post('/verify', async (req, res) => {
   const { signature, buyer, amount } = req.body;
+  console.log(`🔎 Verifying tx: ${signature} for buyer: ${buyer} amount: ${amount}`);
 
   try {
     const confirmation = await connection.getConfirmedTransaction(signature);
     if (!confirmation) {
-      return res.status(400).json({ message: 'Transaction not confirmed.' });
+      return res.status(400).json({ message: '❌ Transaction not confirmed.' });
     }
 
     const buyerPubkey = new PublicKey(buyer);
-    const tokensToSend = amount * 1_000_000;
-    const tokenAmount = BigInt(tokensToSend) * 10n ** 6n; // 6 decimal precision
+    const tokensToSend = amount * 1_000_000; // Adjust based on your token logic
 
-    // ✅ Create receiver's ATA (Buyer's)
-    let buyerTokenAccount;
-    try {
-      buyerTokenAccount = await getOrCreateAssociatedTokenAccount(
-        connection,
-        presaleAuthority, // Payer of fees
-        TOKEN_MINT,
-        buyerPubkey,
-        true // allow owner off curve (especially important for PDA or weird wallets)
-      );
-      console.log("✅ Buyer ATA:", buyerTokenAccount.address.toBase58());
-    } catch (err) {
-      console.error("❌ Error creating buyer ATA:", err);
-      throw new Error("Failed to create buyer token account");
-    }
+    // 🔄 Get/create ATAs
+    const buyerTokenAccount = await safelyGetOrCreateATA(presaleAuthority, TOKEN_MINT, buyerPubkey);
+    const senderTokenAccount = await safelyGetOrCreateATA(presaleAuthority, TOKEN_MINT, presaleAuthority.publicKey);
 
-    // ✅ Create sender's ATA (Presale Authority's)
-    let senderTokenAccount;
-    try {
-      senderTokenAccount = await getOrCreateAssociatedTokenAccount(
-        connection,
-        presaleAuthority, // Payer
-        TOKEN_MINT,
-        presaleAuthority.publicKey,
-        true
-      );
-      console.log("✅ Sender ATA:", senderTokenAccount.address.toBase58());
-    } catch (err) {
-      console.error("❌ Error creating sender ATA:", err);
-      throw new Error("Failed to create sender token account");
-    }
-
-    // 🔁 Transfer tokens
-    const txSig = await transfer(
+    // 💸 Transfer tokens
+    const tx = await transfer(
       connection,
       presaleAuthority,
-      senderTokenAccount.address,
-      buyerTokenAccount.address,
-      presaleAuthority.publicKey,
-      tokenAmount
+      senderTokenAccount,
+      buyerTokenAccount,
+      presaleAuthority,
+      tokensToSend * 1e3 // Your token uses 6 decimals → 1e6 multiplier
     );
 
+    console.log(`✅ Tokens sent. TX: ${tx}`);
     res.json({
       success: true,
       tokensSent: tokensToSend,
-      tokenTx: txSig
+      tokenTx: tx
     });
-
   } catch (err) {
     console.error('❌ Token send error:', err);
-    res.status(500).json({ message: 'Error verifying or sending tokens.', error: err.message });
+    res.status(500).json({ message: 'Error verifying or sending tokens.' });
   }
 });
-
 
 app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
