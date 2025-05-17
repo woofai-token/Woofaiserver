@@ -11,7 +11,7 @@ import {
 import {
   getAssociatedTokenAddress,
   getAccount,
-  createAssociatedTokenAccount,
+  getOrCreateAssociatedTokenAccount,
   transfer,
   TOKEN_2022_PROGRAM_ID
 } from "@solana/spl-token";
@@ -26,7 +26,7 @@ app.use(bodyParser.json());
 
 const connection = new Connection("https://api.mainnet-beta.solana.com", "confirmed");
 
-// 🔐 Load your presale wallet
+// 🔐 Load presale wallet
 const SECRET_KEY_ARRAY = process.env.SECRET_KEY_ARRAY;
 if (!SECRET_KEY_ARRAY) throw new Error("SECRET_KEY_ARRAY not set");
 
@@ -51,40 +51,7 @@ app.post("/verify", async (req, res) => {
     const buyerPubkey = new PublicKey(buyer);
     const tokensToSend = BigInt(Math.floor(amount * TOKENS_PER_SOL * (10 ** TOKEN_DECIMALS)));
 
-    // 🏦 Get buyer ATA address
-    const buyerATA = await getAssociatedTokenAddress(
-      TOKEN_MINT,
-      buyerPubkey,
-      false,
-      TOKEN_2022_PROGRAM_ID
-    );
-
-    // 🧪 Check if buyer's ATA exists
-    let ataExists = false;
-    try {
-      await getAccount(connection, buyerATA, undefined, TOKEN_2022_PROGRAM_ID);
-      ataExists = true;
-    } catch (err) {
-      ataExists = false;
-    }
-
-    // 🏗️ If ATA doesn't exist, create it using your wallet
-    if (!ataExists) {
-      console.log("📦 Creating ATA for buyer:", buyerPubkey.toBase58());
-      await createAssociatedTokenAccount(
-        connection,
-        presaleAuthority,        // payer (your wallet pays)
-        TOKEN_MINT,
-        buyerPubkey,
-        false,
-        "confirmed",
-        TOKEN_2022_PROGRAM_ID
-      );
-    } else {
-      console.log("✅ Buyer ATA already exists:", buyerATA.toBase58());
-    }
-
-    // 🧑‍💼 Get your sender ATA
+    // 🧑‍💼 Sender ATA (your wallet's token account)
     const senderATA = await getAssociatedTokenAddress(
       TOKEN_MINT,
       presaleAuthority.publicKey,
@@ -92,12 +59,26 @@ app.post("/verify", async (req, res) => {
       TOKEN_2022_PROGRAM_ID
     );
 
+    // ✅ Create or get ATA for buyer (this automatically checks & creates if needed)
+    const buyerATA = await getOrCreateAssociatedTokenAccount(
+      connection,
+      presaleAuthority,        // payer (your wallet)
+      TOKEN_MINT,
+      buyerPubkey,
+      false,
+      "confirmed",
+      undefined,
+      TOKEN_2022_PROGRAM_ID
+    );
+
+    console.log("✅ Buyer ATA ready:", buyerATA.address.toBase58());
+
     // 🚀 Transfer tokens
     const txSig = await transfer(
       connection,
       presaleAuthority,
       senderATA,
-      buyerATA,
+      buyerATA.address,
       presaleAuthority.publicKey,
       tokensToSend,
       [],
