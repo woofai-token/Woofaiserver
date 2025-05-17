@@ -48,7 +48,7 @@ async function safelyGetOrCreateATA(connection, payer, mint, owner) {
     false,
     "confirmed",
     undefined,
-    TOKEN_2022_PROGRAM_ID // ✅ Token-2022 program ID
+    TOKEN_2022_PROGRAM_ID
   );
 }
 
@@ -63,8 +63,8 @@ app.post("/verify", async (req, res) => {
 
     const buyerPubkey = new PublicKey(buyer);
 
-    // 🎯 Calculate exact token amount to send in smallest unit (e.g. lamports)
-    const tokensToSend = BigInt(amount) * BigInt(TOKENS_PER_SOL) * BigInt(10 ** TOKEN_DECIMALS);
+    // ✅ Correctly handle fractional SOL input like 0.003
+    const tokensToSend = BigInt(Math.floor(amount * TOKENS_PER_SOL * (10 ** TOKEN_DECIMALS)));
 
     // 🏦 Get buyer ATA
     let buyerATA;
