@@ -9,7 +9,9 @@ import {
   Keypair,
 } from "@solana/web3.js";
 import {
-  getOrCreateAssociatedTokenAccount,
+  getAssociatedTokenAddress,
+  getAccount,
+  createAssociatedTokenAccount,
   transfer,
   TOKEN_2022_PROGRAM_ID
 } from "@solana/spl-token";
@@ -24,38 +26,17 @@ app.use(bodyParser.json());
 
 const connection = new Connection("https://api.mainnet-beta.solana.com", "confirmed");
 
-// 🔐 Load presale wallet secret key
+// 🔐 Load your presale wallet
 const SECRET_KEY_ARRAY = process.env.SECRET_KEY_ARRAY;
 if (!SECRET_KEY_ARRAY) throw new Error("SECRET_KEY_ARRAY not set");
+
 const secretKey = Uint8Array.from(JSON.parse(SECRET_KEY_ARRAY));
 const presaleAuthority = Keypair.fromSecretKey(secretKey);
 
-// 🪙 Token-2022 Mint Address
+// 🪙 Token-2022 Mint
 const TOKEN_MINT = new PublicKey("GhX61gZrBwmGQfQWyL7jvjANnLN6smHcYDZxYrA5yfcn");
-
-// Token constants
 const TOKEN_DECIMALS = 9;
 const TOKENS_PER_SOL = 1_000_000;
-
-// 👷‍♂️ Create or get buyer's ATA using your wallet to pay rent
-async function safelyGetOrCreateATA(payer, mint, owner) {
-  try {
-    const ata = await getOrCreateAssociatedTokenAccount(
-      connection,
-      payer, // payer pays for account creation (you)
-      mint,
-      owner,
-      true, // allowOwnerOffCurve (should be true unless you're using PDA as owner)
-      "confirmed",
-      undefined,
-      TOKEN_2022_PROGRAM_ID
-    );
-    return ata;
-  } catch (err) {
-    console.error("❌ Failed to get/create ATA:", err.message);
-    throw err;
-  }
-}
 
 app.post("/verify", async (req, res) => {
   const { signature, buyer, amount } = req.body;
@@ -70,31 +51,53 @@ app.post("/verify", async (req, res) => {
     const buyerPubkey = new PublicKey(buyer);
     const tokensToSend = BigInt(Math.floor(amount * TOKENS_PER_SOL * (10 ** TOKEN_DECIMALS)));
 
-    console.log("🧮 Sending", tokensToSend.toString(), "tokens to", buyerPubkey.toBase58());
+    // 🏦 Get buyer ATA address
+    const buyerATA = await getAssociatedTokenAddress(
+      TOKEN_MINT,
+      buyerPubkey,
+      false,
+      TOKEN_2022_PROGRAM_ID
+    );
 
-    // 🏦 Get or create buyer's ATA (you pay rent)
-    const buyerATA = await safelyGetOrCreateATA(presaleAuthority, TOKEN_MINT, buyerPubkey);
+    // 🧪 Check if buyer's ATA exists
+    let ataExists = false;
+    try {
+      await getAccount(connection, buyerATA, undefined, TOKEN_2022_PROGRAM_ID);
+      ataExists = true;
+    } catch (err) {
+      ataExists = false;
+    }
 
-    // 💼 Get sender (your) ATA
-    const senderATA = (
-      await getOrCreateAssociatedTokenAccount(
+    // 🏗️ If ATA doesn't exist, create it using your wallet
+    if (!ataExists) {
+      console.log("📦 Creating ATA for buyer:", buyerPubkey.toBase58());
+      await createAssociatedTokenAccount(
         connection,
-        presaleAuthority,
+        presaleAuthority,        // payer (your wallet pays)
         TOKEN_MINT,
-        presaleAuthority.publicKey,
+        buyerPubkey,
         false,
         "confirmed",
-        undefined,
         TOKEN_2022_PROGRAM_ID
-      )
-    ).address;
+      );
+    } else {
+      console.log("✅ Buyer ATA already exists:", buyerATA.toBase58());
+    }
+
+    // 🧑‍💼 Get your sender ATA
+    const senderATA = await getAssociatedTokenAddress(
+      TOKEN_MINT,
+      presaleAuthority.publicKey,
+      false,
+      TOKEN_2022_PROGRAM_ID
+    );
 
     // 🚀 Transfer tokens
     const txSig = await transfer(
       connection,
       presaleAuthority,
       senderATA,
-      buyerATA.address,
+      buyerATA,
       presaleAuthority.publicKey,
       tokensToSend,
       [],
@@ -102,6 +105,7 @@ app.post("/verify", async (req, res) => {
       TOKEN_2022_PROGRAM_ID
     );
 
+    console.log("🎉 Tokens sent! Tx:", txSig);
     return res.json({
       success: true,
       tokensSent: tokensToSend.toString(),
@@ -109,7 +113,7 @@ app.post("/verify", async (req, res) => {
     });
 
   } catch (err) {
-    console.error("❌ Token send error:", err);
+    console.error("❌ Error:", err);
     return res.status(500).json({ message: "Error verifying or sending tokens." });
   }
 });
