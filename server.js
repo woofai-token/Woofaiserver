@@ -1,4 +1,3 @@
-// server.js
 import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
@@ -7,12 +6,12 @@ import {
   Connection,
   PublicKey,
   Keypair,
-  sendAndConfirmTransaction
 } from "@solana/web3.js";
 import {
   getOrCreateAssociatedTokenAccount,
   transfer,
-  TOKEN_2022_PROGRAM_ID
+  TOKEN_2022_PROGRAM_ID,
+  getMint
 } from "@solana/spl-token";
 
 dotenv.config();
@@ -35,63 +34,67 @@ const presaleAuthority = Keypair.fromSecretKey(secretKey);
 // 🪙 Token-2022 Mint Address
 const TOKEN_MINT = new PublicKey("GhX61gZrBwmGQfQWyL7jvjANnLN6smHcYDZxYrA5yfcn");
 
-// Helper to get or create ATA using Token-2022
-async function safelyGetOrCreateATA(connection, payer, mint, owner) {
-  return await getOrCreateAssociatedTokenAccount(
-    connection,
-    payer,
-    mint,
-    owner,
-    false,
-    "confirmed",
-    undefined,
-    TOKEN_2022_PROGRAM_ID // ✅ MUST use this
-  );
+// Get token decimals (cache this if possible)
+let tokenDecimals;
+async function getTokenDecimals() {
+  if (!tokenDecimals) {
+    const mintInfo = await getMint(connection, TOKEN_MINT, "confirmed", TOKEN_2022_PROGRAM_ID);
+    tokenDecimals = mintInfo.decimals;
+  }
+  return tokenDecimals;
 }
 
 app.post("/verify", async (req, res) => {
-  const { signature, buyer, amount } = req.body;
+  const { signature, buyer, amount, solAmount } = req.body;
 
   try {
+    // 1. Verify transaction exists
     const confirmation = await connection.getConfirmedTransaction(signature);
     if (!confirmation) {
       return res.status(400).json({ message: "Transaction not confirmed." });
     }
+     const TOKEN_RATE = 1_000_000; // 1 SOL = 10M tokens
+    const decimals = 9; // Your token decimals
 
+    // 2. Calculate correct token amount
+    const decimals = await getTokenDecimals();
+    const tokensToSend = Math.floor(solAmount * TOKEN_RATE * (10 ** decimals));
+
+    console.log(`Sending ${tokensToSend} tokens (${solAmount} SOL)`);
+
+    // 3. Get buyer ATA
     const buyerPubkey = new PublicKey(buyer);
-    const tokensToSend = amount * 1_000_000; // 1 SOL = 1M WFAI
+    const buyerATA = await getOrCreateAssociatedTokenAccount(
+      connection,
+      presaleAuthority,
+      TOKEN_MINT,
+      buyerPubkey,
+      false,
+      "confirmed",
+      undefined,
+      TOKEN_2022_PROGRAM_ID
+    );
 
-    // 🏦 Get buyer ATA (Token-2022)
-    let buyerATA;
-    try {
-      buyerATA = await safelyGetOrCreateATA(connection, presaleAuthority, TOKEN_MINT, buyerPubkey);
-    } catch (e) {
-      console.error("❌ Error creating buyer ATA:", e);
-      return res.status(500).json({ message: "Failed to create buyer token account" });
-    }
+    // 4. Get sender ATA
+    const senderATA = await getOrCreateAssociatedTokenAccount(
+      connection,
+      presaleAuthority,
+      TOKEN_MINT,
+      presaleAuthority.publicKey,
+      false,
+      "confirmed",
+      undefined,
+      TOKEN_2022_PROGRAM_ID
+    );
 
-    // 🧑‍💼 Sender ATA (Token-2022)
-    const senderATA = (
-      await getOrCreateAssociatedTokenAccount(
-        connection,
-        presaleAuthority,
-        TOKEN_MINT,
-        presaleAuthority.publicKey,
-        false,
-        "confirmed",
-        undefined,
-        TOKEN_2022_PROGRAM_ID
-      )
-    ).address;
-
-    // 🚀 Transfer Tokens (Token-2022)
+    // 5. Transfer tokens with proper amount
     const txSig = await transfer(
       connection,
       presaleAuthority,
-      senderATA,
+      senderATA.address,
       buyerATA.address,
-      presaleAuthority.publicKey,
-      tokensToSend * 1e9, // Convert to correct decimals
+      presaleAuthority,
+      tokensToSend,
       [],
       undefined,
       TOKEN_2022_PROGRAM_ID
@@ -100,11 +103,17 @@ app.post("/verify", async (req, res) => {
     return res.json({
       success: true,
       tokensSent: tokensToSend,
-      tokenTx: txSig
+      tokenTx: txSig,
+      rateUsed: TOKEN_RATE,
+      solAmount: solAmount
     });
+
   } catch (err) {
     console.error("❌ Token send error:", err);
-    return res.status(500).json({ message: "Error verifying or sending tokens." });
+    return res.status(500).json({ 
+      message: "Error verifying or sending tokens.",
+      error: err.message 
+    });
   }
 });
 
