@@ -10,7 +10,6 @@ import {
 } from "@solana/web3.js";
 import {
   getAssociatedTokenAddress,
-  getAccount,
   getOrCreateAssociatedTokenAccount,
   transfer,
   TOKEN_2022_PROGRAM_ID
@@ -36,10 +35,13 @@ const presaleAuthority = Keypair.fromSecretKey(secretKey);
 // 🪙 Token-2022 Mint
 const TOKEN_MINT = new PublicKey("GhX61gZrBwmGQfQWyL7jvjANnLN6smHcYDZxYrA5yfcn");
 const TOKEN_DECIMALS = 9;
-const TOKENS_PER_SOL = 1_000_000;
 
 app.post("/verify", async (req, res) => {
-  const { signature, buyer, amount } = req.body;
+  const { signature, buyer, wfaiAmount } = req.body;
+
+  if (!signature || !buyer || !wfaiAmount) {
+    return res.status(400).json({ message: "Missing fields in request." });
+  }
 
   try {
     console.log("🔍 Verifying transaction:", signature);
@@ -49,9 +51,9 @@ app.post("/verify", async (req, res) => {
     }
 
     const buyerPubkey = new PublicKey(buyer);
-    const tokensToSend = BigInt(Math.floor(amount * TOKENS_PER_SOL * (10 ** TOKEN_DECIMALS)));
+    const tokensToSend = BigInt(wfaiAmount); // already scaled to smallest unit (raw integer)
 
-    // 🧑‍💼 Sender ATA (your wallet's token account)
+    // 🧑‍💼 Sender ATA
     const senderATA = await getAssociatedTokenAddress(
       TOKEN_MINT,
       presaleAuthority.publicKey,
@@ -59,10 +61,10 @@ app.post("/verify", async (req, res) => {
       TOKEN_2022_PROGRAM_ID
     );
 
-    // ✅ Create or get ATA for buyer (this automatically checks & creates if needed)
+    // ✅ Buyer ATA (create if needed)
     const buyerATA = await getOrCreateAssociatedTokenAccount(
       connection,
-      presaleAuthority,        // payer (your wallet)
+      presaleAuthority,
       TOKEN_MINT,
       buyerPubkey,
       false,
